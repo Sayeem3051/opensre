@@ -8,8 +8,10 @@ from app.agent.tools.clients.grafana import (
 )
 from app.agent.tools.clients.llm_client import (
     RootCauseResult,
-    get_llm,
+    get_llm_for_reasoning,
+    get_llm_for_tools,
     parse_root_cause,
+    reset_llm_singletons,
 )
 from app.agent.tools.clients.s3_client import S3CheckResult, get_s3_client
 from app.agent.tools.clients.tracer_client import (
@@ -33,8 +35,10 @@ __all__ = [
     "get_grafana_client_from_credentials",
     # LLM client
     "RootCauseResult",
-    "get_llm",
+    "get_llm_for_reasoning",
+    "get_llm_for_tools",
     "parse_root_cause",
+    "reset_llm_singletons",
     # S3 client
     "S3CheckResult",
     "get_s3_client",

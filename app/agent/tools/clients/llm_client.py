@@ -18,6 +18,11 @@ from openai import AuthenticationError as OpenAIAuthError
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError
 
+from app.config import (
+    ANTHROPIC_LLM_CONFIG,
+    OPENAI_LLM_CONFIG,
+)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Data Types
 # ─────────────────────────────────────────────────────────────────────────────
@@ -314,33 +319,79 @@ def _extract_json_payload(text: str) -> Any:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _llm: LLMClient | OpenAILLMClient | None = None
+_llm_for_tools: LLMClient | OpenAILLMClient | None = None
 
 
-def get_llm() -> LLMClient | OpenAILLMClient:
+def reset_llm_singletons() -> None:
+    """Clear cached LLM clients (tests, benchmarks, alternate configs)."""
+    global _llm, _llm_for_tools
+    _llm = None
+    _llm_for_tools = None
+
+
+def _env_or(*keys: str, default: str) -> str:
+    """First non-empty environment value among *keys*, else *default*."""
+    for key in keys:
+        val = (os.getenv(key) or "").strip()
+        if val:
+            return val
+    return default
+
+
+def _create_llm_client(
+    model_type: str,
+    openai_env_keys: tuple[str, ...],
+    anthropic_env_keys: tuple[str, ...],
+) -> LLMClient | OpenAILLMClient:
+    provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
+    if provider == "openai":
+        config = OPENAI_LLM_CONFIG
+        default_model = config.reasoning_model if model_type == "reasoning" else config.toolcall_model
+        model = _env_or(*openai_env_keys, default=default_model)
+        return OpenAILLMClient(model=model, max_tokens=config.max_tokens)
+    else:
+        config = ANTHROPIC_LLM_CONFIG
+        default_model = config.reasoning_model if model_type == "reasoning" else config.toolcall_model
+        model = _env_or(*anthropic_env_keys, default=default_model)
+        return LLMClient(model=model, max_tokens=config.max_tokens)
+
+
+def get_llm_for_reasoning() -> LLMClient | OpenAILLMClient:
     """
-    Get or create the LLM client singleton.
+    Get or create the LLM client singleton for complex reasoning tasks.
+
+    Uses the full-capability model (e.g., Claude Opus, GPT-4o) for:
+    - Root cause diagnosis and multi-step analysis
+    - Evidence categorization and claim validation
 
     Provider is controlled by the LLM_PROVIDER env var (default: anthropic).
-    Set LLM_PROVIDER=openai to use OpenAI with OPENAI_API_KEY and OPENAI_MODEL.
+    Set LLM_PROVIDER=openai to use OpenAI with OPENAI_API_KEY and OPENAI_REASONING_MODEL.
     """
     global _llm
     if _llm is None:
-        provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
-        if provider == "openai":
-            from app.config import DEFAULT_MAX_TOKENS, DEFAULT_OPENAI_MODEL
-
-            _llm = OpenAILLMClient(
-                model=os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL),
-                max_tokens=DEFAULT_MAX_TOKENS,
-            )
-        else:
-            from app.config import DEFAULT_MAX_TOKENS, DEFAULT_MODEL
-
-            _llm = LLMClient(
-                model=os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL),
-                max_tokens=DEFAULT_MAX_TOKENS,
-            )
+        _llm = _create_llm_client(
+            model_type="reasoning",
+            openai_env_keys=("OPENAI_REASONING_MODEL", "OPENAI_MODEL"),
+            anthropic_env_keys=("ANTHROPIC_REASONING_MODEL", "ANTHROPIC_MODEL"),
+        )
     return _llm
+
+
+def get_llm_for_tools() -> LLMClient | OpenAILLMClient:
+    """
+    Get or create a lightweight LLM client for tool selection and action planning.
+
+    Uses toolcall models (Claude Haiku for Anthropic, GPT-4o mini for OpenAI)
+    for lower cost and faster inference on simple routing decisions.
+    """
+    global _llm_for_tools
+    if _llm_for_tools is None:
+        _llm_for_tools = _create_llm_client(
+            model_type="toolcall",
+            openai_env_keys=("OPENAI_TOOLCALL_MODEL", "OPENAI_MODEL"),
+            anthropic_env_keys=("ANTHROPIC_TOOLCALL_MODEL", "ANTHROPIC_MODEL"),
+        )
+    return _llm_for_tools
 
 
 # ─────────────────────────────────────────────────────────────────────────────
